@@ -144,7 +144,12 @@
             try {
                 // Initialize the engine
                 engine = await webllm.CreateMLCEngine(
-                    "Qwen2.5-7B-Instruct-q4f32_1-MLC",
+//                    "Qwen2.5-1.5B-Instruct-q4f32_1-MLC",
+//                    "Qwen2.5-3B-Instruct-q4f32_1-MLC",
+//                    "Qwen2.5-7B-Instruct-q4f32_1-MLC",
+//                    "Qwen2.5-Coder-1.5B-Instruct-q4f32_1-MLC",
+//                    "Qwen2.5-Coder-3B-Instruct-q4f32_1-MLC",
+                    "Qwen2.5-Coder-7B-Instruct-q4f32_1-MLC",
                     { initProgressCallback: reportProgress }
                 );
                 
@@ -160,7 +165,7 @@
                     parameters: {
                         type: "object",
                         properties: {
-                            tool_name: {
+                            name: {
                                 type: "string",
                                 description: "The name of the new tool to create"
                             },
@@ -169,7 +174,7 @@
                                 description: "A detailed description of what the new tool should do when run javascript function"
                             }
                         },
-                        required: ["tool_name", "description"]
+                        required: ["name", "description"]
                     },
                     execute: createNewTool
                 });
@@ -255,13 +260,13 @@
         
         // Tool: Create new tool
         async function createNewTool(params) {
-            const { tool_name, description } = params;
+            const { name, description } = params;
           console.log('params: '+JSON.stringify(params));
             
             try {
                 // Step 1: Ask the LLM to generate JavaScript code for the tool
-                const codePrompt = `Create a JavaScript function called "${tool_name}" that ${description}. 
-                The function should take a single parameter object and return a value or Promise. 
+                const codePrompt = `Create a JavaScript function called "${name}" that ${description}. 
+                The function should take a single parameters object as named array and return a value or Promise.
                 Include only the function code, without any explanation or markdown formatting.`;
                 
           console.log('codePrompt: '+JSON.stringify(codePrompt));
@@ -277,8 +282,8 @@
                 const schemaPrompt = `Based on this JavaScript function:
                 ${generatedCode}
                 
-                Create a JSON schema for the parameters this function expects. The schema should follow JSON Schema format with type "object" and properties for each parameter the function needs.
-                Include only the JSON schema, without any explanation or markdown formatting.`;
+                Create a JSON for the parameters this function expects. The schema should follow JSON format with type "object" and properties for each parameter the function needs.
+                Include only the JSON, without any explanation or markdown formatting.`;
                 
           console.log('schemaPrompt: '+JSON.stringify(schemaPrompt));
                 const schemaResponse = await engine.chat.completions.create({
@@ -289,7 +294,8 @@
                 
                 let parameters;
                 try {
-                    parameters = JSON.parse(schemaResponse.choices[0].message.content);
+                    parameters = JSON.parse(schemaResponse.choices[0].message.content.split("```json\n")[1].split("```")[0]);
+          console.log('parameters: '+JSON.stringify(parameters));
                 } catch (e) {
                     // If parsing fails, use a generic schema
                     parameters = {
@@ -303,11 +309,13 @@
                 let toolFunction;
                 try {
                     // Evaluate the generated code to create the function
-          console.log('generatedCode.split("```javascript")[1].split("```")[0]: '+JSON.stringify(generatedCode.split("```javascript")[1].split("```")[0]));
-                    eval.call(null,generatedCode.split("```javascript")[1].split("```")[0]);
-          console.log('tool_name: '+JSON.stringify(tool_name));
-                    toolFunction = eval(tool_name);
-          console.log('toolFunction: '+JSON.stringify(toolFunction));
+          console.log('generatedCode.split("```javascript\n")[1].split("```")[0]: '+JSON.stringify(generatedCode.split("```javascript\n")[1].split("```")[0]));
+//                    eval(generatedCode.split("```javascript")[1].split("```")[0]);
+                    eval.call(null,generatedCode.split("```javascript\n")[1].split("```")[0]);
+          console.log('name: '+JSON.stringify(name));
+//                    toolFunction = eval.call(null,name);
+                    toolFunction = eval(name);
+          console.log('toolFunction: '+toolFunction);
                     
                     if (typeof toolFunction !== 'function') {
                         throw new Error('Generated code did not produce a function');
@@ -318,7 +326,7 @@
                 
                 // Add the new tool
                 const newTool = {
-                    name: tool_name,
+                    name: name,
                     description: description,
                     parameters: parameters,
                     execute: toolFunction
@@ -328,8 +336,8 @@
                 
                 return {
                     status: "success",
-                    message: `Tool "${tool_name}" created successfully`,
-                    generated_code: generatedCode,
+                    message: `Tool "${name}" created successfully`,
+                    generated_code: generatedCode.split("```javascript\n")[1].split("```")[0],
                     parameters: parameters
                 };
             } catch (error) {
@@ -351,6 +359,7 @@
             
             try {
                 const result = await tool.execute(parameters);
+//          console.log('result: '+result);
                 addMessage("assistant", JSON.stringify({ tool: toolName, result }, null, 2), true);
 //                addMessage("tool", JSON.stringify({ tool: toolName, result }, null, 2), true);
                 return result;
@@ -392,23 +401,37 @@
           console.log('toolName: '+JSON.stringify(toolName));
           console.log('params: '+JSON.stringify(params));
                     await handleToolCall(toolName, params);
-          console.log('01');
+//          console.log('01');
                     return;
                 }
                 
                 // Otherwise, use the LLM to determine if tools should be called
           console.log('availableTools: '+JSON.stringify(availableTools));
-                const response = await engine.chat.completions.create({
-                    messages: [
-                        { 
-                            role: "system", 
-                            content: `You are an AI assistant with access to tools. 
+          let chatHistory_map = [...chatHistory.map(msg => ({ role: msg.role, content: msg.content }))];
+          let system_TOOL_CALL =               { 
+                            role: "assistant", 
+//                            role: "system", 
+                            content: `role: "system", You are an AI assistant with access to tools. 
                             Available tools: ${Object.keys(availableTools).join(', ')}.
                             If the user asks you to perform a task that matches a tool's description, 
                             respond with JUST the 'name'' and only exact 'arguments', not invent new arguments name which not belong this tool, use arguments names as they are in Available tools list, in JSON format like this:
                             TOOL_CALL: {"name": "name", "arguments": {}}`
-                        },
-                        ...chatHistory.map(msg => ({ role: msg.role, content: msg.content })),
+                        };
+          
+//          ary.splice(target,null,newItem);
+          chatHistory_map.splice(chatHistory_map.length-1,null,system_TOOL_CALL);
+                const response = await engine.chat.completions.create({
+                    messages: [
+                        ...chatHistory_map
+//                        { 
+//                            role: "assistant", 
+//                            content: `You are an AI assistant with access to tools. 
+//                            Available tools: ${Object.keys(availableTools).join(', ')}.
+//                            If the user asks you to perform a task that matches a tool's description, 
+//                            respond with JUST the 'name'' and only exact 'arguments', not invent new arguments name which not belong this tool, use arguments names as they are in Available tools list, in JSON format like this:
+//                            TOOL_CALL: {"name": "name", "arguments": {}}`
+//                        },
+//                        ...chatHistory.map(msg => ({ role: msg.role, content: msg.content })),
                     ],
                     temperature: 0.7
                 });
@@ -423,7 +446,7 @@
                         const toolCall = JSON.parse(toolCallMatch[1]);
           console.log('toolCall: '+JSON.stringify(toolCall));
                         await handleToolCall(toolCall.name, toolCall.arguments);
-          console.log('21');
+//          console.log('21');
                     } catch (e) {
                         addMessage("assistant", `Error processing tool call: ${e.message}`);
                     }
