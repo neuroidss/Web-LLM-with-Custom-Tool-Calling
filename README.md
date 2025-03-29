@@ -1,6 +1,6 @@
 # Web-LLM-with-Custom-Tool-Calling
 
-https://neuroidss.github.io//Web-LLM-with-Custom-Tool-Calling
+https://neuroidss.github.io/Web-LLM-with-Custom-Tool-Calling
 
 ```
 make llm chat with custom tool calling, as native tool calling not yet supported in webllm for qwen. in html&css&js all in single html block.
