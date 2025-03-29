@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web-LLM with Custom Tool Calling</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        #chat-container {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        #chat-history {
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-radius: 4px;
+            background-color: #fafafa;
+        }
+        .message {
+            margin-bottom: 10px;
+            padding: 8px 12px;
+            border-radius: 4px;
+            max-width: 80%;
+        }
+        .user-message {
+            background-color: #e3f2fd;
+            margin-left: auto;
+            border-bottom-right-radius: 0;
+        }
+        .assistant-message {
+            background-color: #f1f1f1;
+            margin-right: auto;
+            border-bottom-left-radius: 0;
+        }
+        .tool-message {
+            background-color: #e8f5e9;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+        #input-area {
+            display: flex;
+            gap: 10px;
+        }
+        #user-input {
+            flex-grow: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            padding: 10px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #progress-container {
+            margin-bottom: 15px;
+        }
+        progress {
+            width: 100%;
+            height: 20px;
+        }
+        #tools-list {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        #tools-list h3 {
+            margin-top: 0;
+        }
+        .tool-item {
+            background-color: #f0f0f0;
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <h1>Web-LLM with Custom Tool Calling</h1>
+    
+    <div id="progress-container">
+        <h3>Loading Model</h3>
+        <progress id="progress-bar" value="0" max="100"></progress>
+        <div id="progress-text">Initializing...</div>
+    </div>
+    
+    <div id="tools-list">
+        <h3>Available Tools</h3>
+        <div id="tools-container"></div>
+    </div>
+    
+    <div id="chat-container">
+        <h3>Chat</h3>
+        <div id="chat-history"></div>
+        <div id="input-area">
+            <input type="text" id="user-input" placeholder="Type your message..." disabled>
+            <button id="send-button" disabled>Send</button>
+        </div>
+    </div>
+
+    <script type="module">
+        import * as webllm from "https://esm.run/@mlc-ai/web-llm";
+
+        // Global variables
+        let engine;
+        let availableTools = {};
+        let chatHistory = [];
+        
+        // DOM elements
+        const progressBar = document.getElementById('progress-bar');
+        const progressText = document.getElementById('progress-text');
+        const chatHistoryElement = document.getElementById('chat-history');
+        const userInput = document.getElementById('user-input');
+        const sendButton = document.getElementById('send-button');
+        const toolsContainer = document.getElementById('tools-container');
+        
+        // Initialize the app
+        async function initialize() {
+            try {
+                // Initialize the engine
+                engine = await webllm.CreateMLCEngine(
+                    "Qwen2.5-7B-Instruct-q4f32_1-MLC",
+                    { initProgressCallback: reportProgress }
+                );
+                
+                // Enable UI
+                userInput.disabled = false;
+                sendButton.disabled = false;
+                progressText.textContent = "Model loaded and ready!";
+                
+                // Add initial tools
+                addTool({
+                    name: "tool_creation_tool",
+                    description: "Creates a new tool with the given name and description. The tool will execute JavaScript code that performs the described functionality.",
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            tool_name: {
+                                type: "string",
+                                description: "The name of the new tool to create"
+                            },
+                            description: {
+                                type: "string",
+                                description: "A detailed description of what the new tool should do when run javascript function"
+                            }
+                        },
+                        required: ["tool_name", "description"]
+                    },
+                    execute: createNewTool
+                });
+                
+                addTool({
+                    name: "list_available_tools",
+                    description: "Lists all currently available tools and their descriptions",
+                    parameters: {
+                        type: "object",
+                        properties: {},
+                        required: []
+                    },
+                    execute: listAvailableTools
+                });
+                
+                // Initial greeting
+                addMessage("assistant", "Hello! I'm an AI assistant with tool calling capabilities. You can ask me to perform tasks or even create new tools for me to use.");
+                
+            } catch (error) {
+                progressText.textContent = `Error: ${error.message}`;
+                console.error(error);
+            }
+        }
+        
+        // Progress callback
+        function reportProgress(progress) {
+            progressBar.value = progress.progress * 100;
+            progressText.textContent = `Loading... ${(progress.progress * 100).toFixed(1)}%`;
+        }
+        
+        // Add a message to the chat history
+        function addMessage(role, content, isTool = false) {
+            const message = { role, content };
+            chatHistory.push(message);
+            
+            const messageElement = document.createElement('div');
+            messageElement.classList.add('message');
+            messageElement.classList.add(`${role}-message`);
+            if (isTool) messageElement.classList.add('tool-message');
+            
+            // Format content if it's an object
+            const displayContent = typeof content === 'object' ? JSON.stringify(content, null, 2) : content;
+            messageElement.textContent = displayContent;
+            
+            chatHistoryElement.appendChild(messageElement);
+            chatHistoryElement.scrollTop = chatHistoryElement.scrollHeight;
+            
+            return message;
+        }
+        
+        // Add a new tool to the available tools
+        function addTool(tool) {
+            availableTools[tool.name] = tool;
+            updateToolsDisplay();
+        }
+        
+        // Update the tools display
+        function updateToolsDisplay() {
+            toolsContainer.innerHTML = '';
+            
+            for (const toolName in availableTools) {
+                const tool = availableTools[toolName];
+                const toolElement = document.createElement('div');
+                toolElement.classList.add('tool-item');
+                
+                toolElement.innerHTML = `
+                    <strong>${tool.name}</strong><br>
+                    <em>${tool.description}</em><br>
+                    Parameters: ${JSON.stringify(tool.parameters.properties, null, 2)}
+                `;
+                
+                toolsContainer.appendChild(toolElement);
+            }
+        }
+        
+        // Tool: List available tools
+        async function listAvailableTools() {
+            return Object.keys(availableTools).map(name => ({
+                name,
+                description: availableTools[name].description
+            }));
+        }
+        
+        // Tool: Create new tool
+        async function createNewTool(params) {
+            const { tool_name, description } = params;
+          console.log('params: '+JSON.stringify(params));
+            
+            try {
+                // Step 1: Ask the LLM to generate JavaScript code for the tool
+                const codePrompt = `Create a JavaScript function called "${tool_name}" that ${description}. 
+                The function should take a single parameter object and return a value or Promise. 
+                Include only the function code, without any explanation or markdown formatting.`;
+                
+          console.log('codePrompt: '+JSON.stringify(codePrompt));
+                const codeResponse = await engine.chat.completions.create({
+                    messages: [{ role: "user", content: codePrompt }],
+                    temperature: 0.1
+                });
+                
+                const generatedCode = codeResponse.choices[0].message.content;
+          console.log('generatedCode: '+JSON.stringify(generatedCode));
+                
+                // Step 2: Ask the LLM to generate the tool schema
+                const schemaPrompt = `Based on this JavaScript function:
+                ${generatedCode}
+                
+                Create a JSON schema for the parameters this function expects. The schema should follow JSON Schema format with type "object" and properties for each parameter the function needs.
+                Include only the JSON schema, without any explanation or markdown formatting.`;
+                
+          console.log('schemaPrompt: '+JSON.stringify(schemaPrompt));
+                const schemaResponse = await engine.chat.completions.create({
+                    messages: [{ role: "user", content: schemaPrompt }],
+                    temperature: 0.1
+                });
+          console.log('schemaResponse: '+JSON.stringify(schemaResponse));
+                
+                let parameters;
+                try {
+                    parameters = JSON.parse(schemaResponse.choices[0].message.content);
+                } catch (e) {
+                    // If parsing fails, use a generic schema
+                    parameters = {
+                        type: "object",
+                        properties: {},
+                        required: []
+                    };
+                }
+                
+                // Step 3: Create the function and tool
+                let toolFunction;
+                try {
+                    // Evaluate the generated code to create the function
+          console.log('generatedCode.split("```javascript")[1].split("```")[0]: '+JSON.stringify(generatedCode.split("```javascript")[1].split("```")[0]));
+                    eval.call(null,generatedCode.split("```javascript")[1].split("```")[0]);
+          console.log('tool_name: '+JSON.stringify(tool_name));
+                    toolFunction = eval(tool_name);
+          console.log('toolFunction: '+JSON.stringify(toolFunction));
+                    
+                    if (typeof toolFunction !== 'function') {
+                        throw new Error('Generated code did not produce a function');
+                    }
+                } catch (e) {
+                    throw new Error(`Failed to create tool function: ${e.message}`);
+                }
+                
+                // Add the new tool
+                const newTool = {
+                    name: tool_name,
+                    description: description,
+                    parameters: parameters,
+                    execute: toolFunction
+                };
+                
+                addTool(newTool);
+                
+                return {
+                    status: "success",
+                    message: `Tool "${tool_name}" created successfully`,
+                    generated_code: generatedCode,
+                    parameters: parameters
+                };
+            } catch (error) {
+                return {
+                    status: "error",
+                    message: `Failed to create tool: ${error.message}`
+                };
+            }
+        }
+        
+        // Handle tool calls
+        async function handleToolCall(toolName, parameters) {
+            if (!availableTools[toolName]) {
+                throw new Error(`Tool ${toolName} not found`);
+            }
+            
+            const tool = availableTools[toolName];
+            addMessage("assistant", `Calling tool: ${toolName} with parameters: ${JSON.stringify(parameters)}`, true);
+            
+            try {
+                const result = await tool.execute(parameters);
+                addMessage("assistant", JSON.stringify({ tool: toolName, result }, null, 2), true);
+//                addMessage("tool", JSON.stringify({ tool: toolName, result }, null, 2), true);
+                return result;
+            } catch (error) {
+                addMessage("assistant", JSON.stringify({ tool: toolName, error: error.message }, null, 2), true);
+//                addMessage("tool", JSON.stringify({ tool: toolName, error: error.message }, null, 2), true);
+                throw error;
+            }
+        }
+        
+        // Process user message
+        async function processUserMessage() {
+            const message = userInput.value.trim();
+            if (!message) return;
+            
+            userInput.value = '';
+            userInput.disabled = true;
+            sendButton.disabled = true;
+            
+            addMessage("user", message);
+          console.log('message: '+JSON.stringify(message));
+            
+            try {
+                // First, check if the message is a direct tool call (simple format for demo)
+                const directToolCallMatch = message.match(/^call tool (\w+)(?:\s+(.+))?$/i);
+                if (directToolCallMatch) {
+                    const toolName = directToolCallMatch[1];
+                    let params = {};
+                    
+                    try {
+                        if (directToolCallMatch[2]) {
+                            params = JSON.parse(directToolCallMatch[2]);
+                        }
+                    } catch (e) {
+                        addMessage("assistant", `Invalid parameters format. Please provide parameters as JSON.`);
+                        return;
+                    }
+                    
+          console.log('toolName: '+JSON.stringify(toolName));
+          console.log('params: '+JSON.stringify(params));
+                    await handleToolCall(toolName, params);
+          console.log('01');
+                    return;
+                }
+                
+                // Otherwise, use the LLM to determine if tools should be called
+          console.log('availableTools: '+JSON.stringify(availableTools));
+                const response = await engine.chat.completions.create({
+                    messages: [
+                        { 
+                            role: "system", 
+                            content: `You are an AI assistant with access to tools. 
+                            Available tools: ${Object.keys(availableTools).join(', ')}.
+                            If the user asks you to perform a task that matches a tool's description, 
+                            respond with JUST the 'name'' and only exact 'arguments', not invent new arguments name which not belong this tool, use arguments names as they are in Available tools list, in JSON format like this:
+                            TOOL_CALL: {"name": "name", "arguments": {}}`
+                        },
+                        ...chatHistory.map(msg => ({ role: msg.role, content: msg.content })),
+                    ],
+                    temperature: 0.7
+                });
+          console.log('response: '+JSON.stringify(response));
+                
+                const assistantResponse = response.choices[0].message.content;
+                
+                // Check for tool call pattern
+                const toolCallMatch = assistantResponse.match(/TOOL_CALL:\s*(\{.*\})/);
+                if (toolCallMatch) {
+                    try {
+                        const toolCall = JSON.parse(toolCallMatch[1]);
+          console.log('toolCall: '+JSON.stringify(toolCall));
+                        await handleToolCall(toolCall.name, toolCall.arguments);
+          console.log('21');
+                    } catch (e) {
+                        addMessage("assistant", `Error processing tool call: ${e.message}`);
+                    }
+                } else {
+                    addMessage("assistant", assistantResponse);
+                }
+            } catch (error) {
+                addMessage("assistant", `Error: ${error.message}`);
+                console.error(error);
+            } finally {
+                userInput.disabled = false;
+                sendButton.disabled = false;
+                userInput.focus();
+            }
+        }
+        
+        // Event listeners
+        sendButton.addEventListener('click', processUserMessage);
+        userInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                processUserMessage();
+            }
+        });
+        
+        // Initialize the app
+        initialize();
+    </script>
+</body>
+</html>
